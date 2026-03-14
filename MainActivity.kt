@@ -61,20 +61,26 @@ data class EqBandInfo(val band: Int, val centerFreqHz: Int, val minLevel: Int, v
 
 // ── Note / color utilities ────────────────────────────────────────────────────
 
-private val NOTE_NAMES = arrayOf("C","C#","D","D#","E","F","F#","G","G#","A","A#","B")
+val NOTE_NAMES = arrayOf("C","C#","D","D#","E","F","F#","G","G#","A","A#","B")
 
-// Base frequencies at octave 2 (~65 Hz range)
 private val BASS_FREQ_BASE = mapOf(
     "C"  to 65.41,  "C#" to 69.30,  "D"  to 73.42,  "D#" to 77.78,
     "E"  to 82.41,  "F"  to 87.31,  "F#" to 92.50,  "G"  to 98.00,
     "G#" to 103.83, "A"  to 110.00, "A#" to 116.54,  "B"  to 123.47
 )
 
-// Octave multipliers: octave 1 = sub-bass, 2 = deep bass, 3 = mid-bass, 4 = upper-bass
-private val OCTAVE_MULT = mapOf(1 to 0.5, 2 to 1.0, 3 to 2.0, 4 to 4.0)
+private val OCTAVE_MULT  = mapOf(1 to 0.5, 2 to 1.0, 3 to 2.0, 4 to 4.0)
 private val OCTAVE_LABEL = mapOf(1 to "SUB", 2 to "DEEP", 3 to "MID", 4 to "HIGH")
+private val OCTAVE_HINT  = mapOf(1 to "~32 Hz", 2 to "~65 Hz", 3 to "~130 Hz", 4 to "~260 Hz")
 
-private fun noteColor(note: String): Color = when (note) {
+// 12 notes in 3 rows of 4 for the picker
+val NOTE_ROWS = listOf(
+    listOf("C", "C#", "D", "D#"),
+    listOf("E", "F", "F#", "G"),
+    listOf("G#", "A", "A#", "B")
+)
+
+fun noteColor(note: String): Color = when (note) {
     "C"  -> Color(0xFFEF5350)
     "C#" -> Color(0xFFEC407A)
     "D"  -> Color(0xFFAB47BC)
@@ -121,18 +127,18 @@ private fun fft(re: DoubleArray, im: DoubleArray) {
     var len = 2
     while (len <= n) {
         val half = len / 2
-        val ang = -2.0 * PI / len
-        val wRe = cos(ang); val wIm = sin(ang)
+        val ang  = -2.0 * PI / len
+        val wRe  = cos(ang); val wIm = sin(ang)
         var i = 0
         while (i < n) {
             var cRe = 1.0; var cIm = 0.0
             for (jj in 0 until half) {
-                val uRe = re[i + jj]; val uIm = im[i + jj]
-                val vRe = re[i + jj + half] * cRe - im[i + jj + half] * cIm
-                val vIm = re[i + jj + half] * cIm + im[i + jj + half] * cRe
-                re[i + jj] = uRe + vRe; im[i + jj] = uIm + vIm
-                re[i + jj + half] = uRe - vRe; im[i + jj + half] = uIm - vIm
-                val nRe = cRe * wRe - cIm * wIm; cIm = cRe * wIm + cIm * wRe; cRe = nRe
+                val uRe = re[i+jj];         val uIm = im[i+jj]
+                val vRe = re[i+jj+half]*cRe - im[i+jj+half]*cIm
+                val vIm = re[i+jj+half]*cIm + im[i+jj+half]*cRe
+                re[i+jj] = uRe+vRe;         im[i+jj] = uIm+vIm
+                re[i+jj+half] = uRe-vRe;    im[i+jj+half] = uIm-vIm
+                val nRe = cRe*wRe - cIm*wIm; cIm = cRe*wIm + cIm*wRe; cRe = nRe
             }
             i += len
         }
@@ -148,7 +154,7 @@ private fun magnitudeSpectrum(samples: FloatArray, offset: Int, fftSize: Int): D
         re[i] = samples[offset + i].toDouble() * w
     }
     fft(re, im)
-    return DoubleArray(fftSize / 2) { i -> sqrt(re[i] * re[i] + im[i] * im[i]) }
+    return DoubleArray(fftSize / 2) { i -> sqrt(re[i]*re[i] + im[i]*im[i]) }
 }
 
 // ── Audio decoding ────────────────────────────────────────────────────────────
@@ -176,8 +182,8 @@ private suspend fun decodeAudio(context: Context, uri: Uri): Pair<Int, FloatArra
         codec.configure(trackFormat, null, null, 0)
         codec.start()
 
-        val chunks = mutableListOf<ByteArray>()
-        val info   = MediaCodec.BufferInfo()
+        val chunks    = mutableListOf<ByteArray>()
+        val info      = MediaCodec.BufferInfo()
         var inputDone = false; var outputDone = false
 
         while (!outputDone) {
@@ -196,8 +202,8 @@ private suspend fun decodeAudio(context: Context, uri: Uri): Pair<Int, FloatArra
                 }
             }
             when (val out = codec.dequeueOutputBuffer(info, 10_000L)) {
-                MediaCodec.INFO_TRY_AGAIN_LATER      -> {}
-                MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {}
+                MediaCodec.INFO_TRY_AGAIN_LATER       -> {}
+                MediaCodec.INFO_OUTPUT_FORMAT_CHANGED  -> {}
                 else -> if (out >= 0) {
                     if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) outputDone = true
                     val buf = codec.getOutputBuffer(out)!!
@@ -235,11 +241,11 @@ private fun detectBPM(samples: FloatArray, sampleRate: Int): Float {
     val energy = FloatArray(frameCount)
     for (f in 0 until frameCount) {
         var e = 0.0f
-        for (s in 0 until frameSize) { val x = samples[f * hopSize + s]; e += x * x }
+        for (s in 0 until frameSize) { val x = samples[f*hopSize+s]; e += x*x }
         energy[f] = e / frameSize
     }
     val onset = FloatArray(frameCount)
-    for (f in 1 until frameCount) onset[f] = maxOf(0f, energy[f] - energy[f - 1])
+    for (f in 1 until frameCount) onset[f] = maxOf(0f, energy[f] - energy[f-1])
 
     val maxLag = (sampleRate * 60.0 / (hopSize * 60.0)).toInt().coerceAtLeast(1)
     val minLag = (sampleRate * 60.0 / (hopSize * 200.0)).toInt().coerceAtLeast(1)
@@ -247,7 +253,7 @@ private fun detectBPM(samples: FloatArray, sampleRate: Int): Float {
     var bestLag = minLag; var bestCorr = -1.0
     for (lag in minLag..maxLag) {
         var corr = 0.0
-        for (f in 0 until frameCount - lag) corr += (onset[f] * onset[f + lag]).toDouble()
+        for (f in 0 until frameCount - lag) corr += (onset[f] * onset[f+lag]).toDouble()
         if (corr > bestCorr) { bestCorr = corr; bestLag = lag }
     }
     return (sampleRate * 60.0 / (hopSize * bestLag)).toFloat().coerceIn(60f, 200f)
@@ -259,7 +265,6 @@ private const val FFT_SIZE = 8192
 
 private fun analyzeRootNote(samples: FloatArray, start: Int, end: Int, sampleRate: Int): Pair<String, Float> {
     if (end - start < FFT_SIZE) return Pair("?", 0f)
-
     val mag = DoubleArray(FFT_SIZE / 2)
     var count = 0; var p = start
     while (p + FFT_SIZE <= end) {
@@ -271,49 +276,46 @@ private fun analyzeRootNote(samples: FloatArray, start: Int, end: Int, sampleRat
     for (i in mag.indices) mag[i] /= count.toDouble()
 
     val loIdx = (60.0  * FFT_SIZE / sampleRate).toInt().coerceAtLeast(1)
-    val hiIdx = (500.0 * FFT_SIZE / sampleRate).toInt().coerceAtMost(FFT_SIZE / 2 - 1)
-
+    val hiIdx = (500.0 * FFT_SIZE / sampleRate).toInt().coerceAtMost(FFT_SIZE/2 - 1)
     var peakIdx = loIdx; var peakMag = 0.0
     for (i in loIdx..hiIdx) if (mag[i] > peakMag) { peakMag = mag[i]; peakIdx = i }
 
     val freq   = peakIdx.toDouble() * sampleRate / FFT_SIZE
     val avgMag = (loIdx..hiIdx).sumOf { mag[it] } / (hiIdx - loIdx + 1)
     val conf   = if (avgMag > 0) (peakMag / avgMag / 20.0).toFloat().coerceIn(0f, 1f) else 0f
-
     return Pair(freqToNote(freq), conf)
 }
 
 // ── Bass synthesis ────────────────────────────────────────────────────────────
 
-// Pure sine wave per bar at chosen octave with smooth attack/release envelope
+// notes: list of note strings per bar, null = silence for that bar
 private fun generateBassLine(
-    bars: List<BarResult>,
-    enabled: List<Boolean>,
+    barCount: Int,
+    notes: List<String?>,
     barSamples: Int,
     sampleRate: Int,
-    octave: Int       // 1=sub, 2=deep, 3=mid, 4=high
+    octave: Int
 ): FloatArray {
-    val mult = OCTAVE_MULT[octave] ?: 1.0
-    val out  = FloatArray(bars.size * barSamples)
-    for ((b, bar) in bars.withIndex()) {
-        if (!enabled[b] || bar.rootNote == "?") continue
-        val baseFreq = BASS_FREQ_BASE[bar.rootNote] ?: continue
-        val freq     = baseFreq * mult
-        val start    = b * barSamples
-        val attackSamples  = (sampleRate * 0.015).toInt().coerceAtLeast(1) // 15 ms attack
-        val releaseSamples = (sampleRate * 0.040).toInt().coerceAtLeast(1) // 40 ms release
+    val mult           = OCTAVE_MULT[octave] ?: 1.0
+    val out            = FloatArray(barCount * barSamples)
+    val attackSamples  = (sampleRate * 0.015).toInt().coerceAtLeast(1)
+    val releaseSamples = (sampleRate * 0.040).toInt().coerceAtLeast(1)
+
+    for (b in 0 until barCount) {
+        val note = notes.getOrNull(b) ?: continue
+        val freq = (BASS_FREQ_BASE[note] ?: continue) * mult
+        val start = b * barSamples
         for (i in 0 until barSamples) {
             val t       = i.toDouble() / sampleRate
             val attack  = minOf(1.0, i.toDouble() / attackSamples)
             val release = minOf(1.0, (barSamples - i).toDouble() / releaseSamples)
-            val env     = attack * release
-            out[start + i] = (sin(2.0 * PI * freq * t) * env * 0.65).toFloat()
+            out[start + i] = (sin(2.0 * PI * freq * t) * attack * release * 0.70).toFloat()
         }
     }
     return out
 }
 
-// ── WAV export ────────────────────────────────────────────────────────────────
+// ── WAV I/O ───────────────────────────────────────────────────────────────────
 
 private fun writeWav(file: File, samples: FloatArray, sampleRate: Int) {
     FileOutputStream(file).use { fos ->
@@ -338,16 +340,31 @@ private fun writeWav(file: File, samples: FloatArray, sampleRate: Int) {
     }
 }
 
+// Generate bass-only WAV to cache file, return its path
+private suspend fun buildBassPreview(
+    context: Context,
+    result: AnalysisResult,
+    notes: List<String?>,
+    octave: Int
+): File = withContext(Dispatchers.Default) {
+    val sr         = result.sampleRate
+    val barSamples = ((60.0 / result.bpm) * 4 * sr).toInt()
+    val bass       = generateBassLine(result.bars.size, notes, barSamples, sr, octave)
+    val file       = File(context.cacheDir, "broot_preview.wav")
+    withContext(Dispatchers.IO) { writeWav(file, bass, sr) }
+    file
+}
+
 private suspend fun saveMix(
     context: Context, uri: Uri,
-    result: AnalysisResult, enabled: List<Boolean>, octave: Int,
+    result: AnalysisResult, notes: List<String?>, octave: Int,
     onStatus: (String) -> Unit
 ): String = withContext(Dispatchers.IO) {
     onStatus("Decoding audio…")
     val (sr, original) = decodeAudio(context, uri)
     onStatus("Generating bass…")
     val barSamples = ((60.0 / result.bpm) * 4 * sr).toInt()
-    val bass = generateBassLine(result.bars, enabled, barSamples, sr, octave)
+    val bass = generateBassLine(result.bars.size, notes, barSamples, sr, octave)
     onStatus("Mixing…")
     val mixed = FloatArray(maxOf(original.size, bass.size)) { i ->
         val a = if (i < original.size) original[i] else 0f
@@ -370,21 +387,17 @@ private suspend fun analyzeAudio(
 ): AnalysisResult = withContext(Dispatchers.Default) {
     onProgress(0.05f, "Decoding audio…")
     val (sampleRate, samples) = withContext(Dispatchers.IO) { decodeAudio(context, uri) }
-
     onProgress(0.35f, "Detecting BPM…")
     val bpm = detectBPM(samples, sampleRate)
-
     val barSamples = ((60.0 / bpm) * 4 * sampleRate).toInt()
     val totalBars  = (samples.size / barSamples).coerceAtLeast(1)
     onProgress(0.45f, "BPM ≈ ${bpm.toInt()} · $totalBars bars")
-
     val bars = mutableListOf<BarResult>()
     for (b in 0 until totalBars) {
-        val s = b * barSamples
-        val e = minOf(s + barSamples, samples.size)
+        val s = b * barSamples; val e = minOf(s + barSamples, samples.size)
         val (note, conf) = analyzeRootNote(samples, s, e, sampleRate)
         bars.add(BarResult(b, note, conf))
-        onProgress(0.45f + 0.50f * (b + 1f) / totalBars, "Bar ${b + 1} / $totalBars")
+        onProgress(0.45f + 0.50f * (b + 1f) / totalBars, "Bar ${b+1} / $totalBars")
         yield()
     }
     AnalysisResult(bpm, bars, sampleRate)
@@ -402,9 +415,7 @@ class MainActivity : ComponentActivity() {
                     background = Color(0xFF0D0D0D),
                     surface    = Color(0xFF1A1A1A)
                 )
-            ) {
-                Surface(Modifier.fillMaxSize()) { BrootApp() }
-            }
+            ) { Surface(Modifier.fillMaxSize()) { BrootApp() } }
         }
     }
 }
@@ -474,6 +485,7 @@ fun DoneView(result: AnalysisResult, uri: Uri, fileName: String, onReset: () -> 
     val ctx   = LocalContext.current
     val scope = rememberCoroutineScope()
 
+    // ── Main player ──
     val player      = remember { MediaPlayer() }
     var playerReady by remember { mutableStateOf(false) }
     var isPlaying   by remember { mutableStateOf(false) }
@@ -482,17 +494,31 @@ fun DoneView(result: AnalysisResult, uri: Uri, fileName: String, onReset: () -> 
     var isSeeking   by remember { mutableStateOf(false) }
     var seekTarget  by remember { mutableStateOf(0) }
 
+    // ── Bass preview player ──
+    val bassPlayer      = remember { MediaPlayer() }
+    var bassPlaying     by remember { mutableStateOf(false) }
+    var bassLoading     by remember { mutableStateOf(false) }
+
+    // ── EQ ──
     var eq       by remember { mutableStateOf<Equalizer?>(null) }
     var eqBands  by remember { mutableStateOf<List<EqBandInfo>>(emptyList()) }
     var eqLevels by remember { mutableStateOf(IntArray(0)) }
 
-    val bassEnabled  = remember { mutableStateListOf(*Array(result.bars.size) { true }) }
-    var bassOctave   by remember { mutableStateOf(2) }   // 1–4
+    // ── Bass notes: null = silence, string = note to play ──
+    // Pre-fill from detection result
+    val bassNotes = remember {
+        mutableStateListOf(*Array(result.bars.size) { i ->
+            result.bars[i].rootNote.takeIf { it != "?" }
+        })
+    }
+    var editingBar   by remember { mutableStateOf<Int?>(null) }
+    var bassOctave   by remember { mutableStateOf(2) }
     var exporting    by remember { mutableStateOf(false) }
     var exportStatus by remember { mutableStateOf("") }
 
     var tab by remember { mutableStateOf(0) }
 
+    // Setup main player + EQ
     LaunchedEffect(uri) {
         try {
             withContext(Dispatchers.IO) { player.setDataSource(ctx, uri); player.prepare() }
@@ -518,7 +544,12 @@ fun DoneView(result: AnalysisResult, uri: Uri, fileName: String, onReset: () -> 
         }
     }
 
-    DisposableEffect(Unit) { onDispose { eq?.release(); player.release() } }
+    DisposableEffect(Unit) {
+        onDispose {
+            eq?.release(); player.release()
+            runCatching { bassPlayer.release() }
+        }
+    }
 
     val barDurationMs = if (result.bpm > 0) ((60.0 / result.bpm) * 4 * 1000).toInt() else 1
     val currentBar    = (currentMs / barDurationMs).coerceIn(0, result.bars.size - 1)
@@ -529,6 +560,32 @@ fun DoneView(result: AnalysisResult, uri: Uri, fileName: String, onReset: () -> 
         if (isPlaying && !isSeeking) timelineState.animateScrollToItem(currentBar)
     }
 
+    // Helper: build preview and play
+    fun previewBass() {
+        if (bassLoading) return
+        scope.launch {
+            bassLoading = true
+            try {
+                if (bassPlaying) { bassPlayer.pause(); bassPlayer.seekTo(0); bassPlaying = false }
+                val file = buildBassPreview(ctx, result, bassNotes.toList(), bassOctave)
+                bassPlayer.reset()
+                withContext(Dispatchers.IO) {
+                    bassPlayer.setDataSource(file.absolutePath)
+                    bassPlayer.prepare()
+                }
+                bassPlayer.setOnCompletionListener { bassPlaying = false }
+                bassPlayer.start()
+                bassPlaying = true
+            } catch (_: Exception) {}
+            bassLoading = false
+        }
+    }
+
+    fun stopBassPreview() {
+        runCatching { if (bassPlaying) { bassPlayer.pause(); bassPlayer.seekTo(0) } }
+        bassPlaying = false
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -537,6 +594,7 @@ fun DoneView(result: AnalysisResult, uri: Uri, fileName: String, onReset: () -> 
             .padding(top = 48.dp, start = 16.dp, end = 16.dp, bottom = 32.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        // ── Header ──
         Text("broot", fontSize = 20.sp, fontWeight = FontWeight.Bold,
             color = Color.White, letterSpacing = 4.sp)
         Spacer(Modifier.height(16.dp))
@@ -549,7 +607,7 @@ fun DoneView(result: AnalysisResult, uri: Uri, fileName: String, onReset: () -> 
             color = Color(0xFF333333), maxLines = 1)
         Spacer(Modifier.height(20.dp))
 
-        // ── Player ──
+        // ── Main player ──
         if (playerReady) {
             Box(
                 contentAlignment = Alignment.Center,
@@ -619,19 +677,24 @@ fun DoneView(result: AnalysisResult, uri: Uri, fileName: String, onReset: () -> 
         when (tab) {
             0 -> TimelineTab(result.bars, currentBar, isPlaying, timelineState)
             1 -> BassTab(
-                    result      = result,
-                    bassEnabled = bassEnabled,
-                    octave      = bassOctave,
-                    exporting   = exporting,
-                    exportStatus= exportStatus,
-                    onToggle    = { i -> bassEnabled[i] = !bassEnabled[i] },
-                    onToggleAll = { v -> for (i in bassEnabled.indices) bassEnabled[i] = v },
-                    onOctaveChange = { bassOctave = it },
-                    onExport    = {
+                    result       = result,
+                    bassNotes    = bassNotes,
+                    editingBar   = editingBar,
+                    octave       = bassOctave,
+                    bassPlaying  = bassPlaying,
+                    bassLoading  = bassLoading,
+                    exporting    = exporting,
+                    exportStatus = exportStatus,
+                    onSelectBar     = { i -> editingBar = if (editingBar == i) null else i },
+                    onAssignNote    = { note -> editingBar?.let { bassNotes[it] = note } },
+                    onClearNote     = { editingBar?.let { bassNotes[it] = null } },
+                    onOctaveChange  = { bassOctave = it },
+                    onPreview       = { if (bassPlaying) stopBassPreview() else previewBass() },
+                    onExport        = {
                         scope.launch {
                             exporting = true; exportStatus = ""
                             runCatching {
-                                saveMix(ctx, uri, result, bassEnabled.toList(), bassOctave) {
+                                saveMix(ctx, uri, result, bassNotes.toList(), bassOctave) {
                                     exportStatus = it
                                 }
                             }.onSuccess { path -> exportStatus = "Saved:\n$path" }
@@ -678,13 +741,18 @@ fun TimelineTab(
 @Composable
 fun BassTab(
     result: AnalysisResult,
-    bassEnabled: List<Boolean>,
+    bassNotes: List<String?>,
+    editingBar: Int?,
     octave: Int,
+    bassPlaying: Boolean,
+    bassLoading: Boolean,
     exporting: Boolean,
     exportStatus: String,
-    onToggle: (Int) -> Unit,
-    onToggleAll: (Boolean) -> Unit,
+    onSelectBar: (Int) -> Unit,
+    onAssignNote: (String) -> Unit,
+    onClearNote: () -> Unit,
     onOctaveChange: (Int) -> Unit,
+    onPreview: () -> Unit,
     onExport: () -> Unit
 ) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -692,36 +760,112 @@ fun BassTab(
         // ── Octave selector ──
         Text("O C T A V E", fontSize = 10.sp, color = Color(0xFF444444), letterSpacing = 3.sp,
             modifier = Modifier.align(Alignment.Start).padding(start = 4.dp, bottom = 8.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             (1..4).forEach { oct ->
                 val selected = oct == octave
-                val freqHint = when (oct) {
-                    1 -> "~32 Hz"
-                    2 -> "~65 Hz"
-                    3 -> "~130 Hz"
-                    else -> "~260 Hz"
-                }
                 Box(
                     contentAlignment = Alignment.Center,
-                    modifier = Modifier.weight(1f).height(58.dp)
+                    modifier = Modifier.weight(1f).height(52.dp)
                         .clip(RoundedCornerShape(10.dp))
                         .background(if (selected) Color(0xFF26A69A) else Color(0xFF1A1A1A))
                         .clickable { onOctaveChange(oct) }
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            OCTAVE_LABEL[oct] ?: "$oct",
-                            fontSize = 13.sp, fontWeight = FontWeight.Bold,
-                            color = if (selected) Color.White else Color(0xFF555555)
-                        )
-                        Text(
-                            freqHint,
-                            fontSize = 9.sp,
-                            color = if (selected) Color(0xAAFFFFFF) else Color(0xFF333333)
-                        )
+                        Text(OCTAVE_LABEL[oct] ?: "$oct", fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (selected) Color.White else Color(0xFF555555))
+                        Text(OCTAVE_HINT[oct] ?: "", fontSize = 9.sp,
+                            color = if (selected) Color(0xAAFFFFFF) else Color(0xFF333333))
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(14.dp))
+        Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF1A1A1A)))
+        Spacer(Modifier.height(12.dp))
+
+        // ── Bar row ──
+        Text("B A R S", fontSize = 10.sp, color = Color(0xFF444444), letterSpacing = 3.sp,
+            modifier = Modifier.align(Alignment.Start).padding(start = 4.dp, bottom = 8.dp))
+        Text("tap a bar to edit its note", fontSize = 10.sp, color = Color(0xFF333333),
+            modifier = Modifier.align(Alignment.Start).padding(start = 4.dp, bottom = 10.dp))
+
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            contentPadding = PaddingValues(horizontal = 4.dp)
+        ) {
+            itemsIndexed(result.bars) { i, bar ->
+                BassBarCard(
+                    barIndex     = i,
+                    assignedNote = bassNotes.getOrNull(i),
+                    detectedNote = bar.rootNote.takeIf { it != "?" },
+                    isEditing    = editingBar == i,
+                    onClick      = { onSelectBar(i) }
+                )
+            }
+        }
+
+        // ── Note picker (shown when a bar is selected) ──
+        if (editingBar != null) {
+            Spacer(Modifier.height(12.dp))
+            Box(
+                modifier = Modifier.fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0xFF141420))
+                    .padding(10.dp)
+            ) {
+                Column {
+                    val barNum = editingBar + 1
+                    val detected = result.bars.getOrNull(editingBar)?.rootNote?.takeIf { it != "?" }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Bar $barNum", fontSize = 12.sp, fontWeight = FontWeight.Bold,
+                            color = Color.White)
+                        if (detected != null) {
+                            Spacer(Modifier.width(8.dp))
+                            Text("detected: $detected", fontSize = 10.sp,
+                                color = noteColor(detected).copy(alpha = 0.7f))
+                        }
+                        Spacer(Modifier.weight(1f))
+                        // Clear button
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier.height(24.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(Color(0xFF2A1A1A))
+                                .clickable { onClearNote() }
+                                .padding(horizontal = 10.dp)
+                        ) { Text("✕ clear", fontSize = 10.sp, color = Color(0xFF774444)) }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    // 3 rows × 4 notes
+                    NOTE_ROWS.forEach { row ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            row.forEach { note ->
+                                val isAssigned = bassNotes.getOrNull(editingBar) == note
+                                val color      = noteColor(note)
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier.weight(1f).height(44.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(
+                                            if (isAssigned) color
+                                            else color.copy(alpha = 0.18f)
+                                        )
+                                        .clickable { onAssignNote(note) }
+                                ) {
+                                    Text(note, fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                                        color = if (isAssigned) Color.White
+                                                else color.copy(alpha = 0.7f))
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -729,48 +873,55 @@ fun BassTab(
 
         Spacer(Modifier.height(16.dp))
         Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF1A1A1A)))
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(14.dp))
 
-        // ── Bar toggles ──
+        // ── Preview + Save row ──
+        val hasAnyNote = bassNotes.any { it != null }
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+            modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            SmallChip("All On")  { onToggleAll(true) }
-            SmallChip("All Off") { onToggleAll(false) }
-        }
-        Spacer(Modifier.height(10.dp))
-
-        LazyRow(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            contentPadding = PaddingValues(horizontal = 4.dp)
-        ) {
-            itemsIndexed(result.bars) { i, bar ->
-                BassBarCard(bar, enabled = bassEnabled[i]) { onToggle(i) }
-            }
-        }
-
-        Spacer(Modifier.height(14.dp))
-        val enabledCount = bassEnabled.count { it }
-        Text("$enabledCount / ${result.bars.size} bars active",
-            fontSize = 11.sp, color = Color(0xFF555555))
-        Spacer(Modifier.height(14.dp))
-
-        // ── Save button ──
-        Box(
-            contentAlignment = Alignment.Center,
-            modifier = Modifier.fillMaxWidth(0.68f).height(44.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(
-                    if (!exporting && enabledCount > 0) Color(0xFF26A69A) else Color(0xFF1E1E1E)
+            // Preview bass button
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.weight(1f).height(44.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(
+                        when {
+                            bassLoading -> Color(0xFF1E1E1E)
+                            bassPlaying -> Color(0xFF7E57C2)
+                            hasAnyNote  -> Color(0xFF37474F)
+                            else        -> Color(0xFF1E1E1E)
+                        }
+                    )
+                    .clickable(enabled = hasAnyNote && !bassLoading) { onPreview() }
+            ) {
+                Text(
+                    when {
+                        bassLoading -> "Loading…"
+                        bassPlaying -> "⏹ Stop"
+                        else        -> "▶ Preview"
+                    },
+                    fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                    color = if (hasAnyNote && !bassLoading) Color.White else Color(0xFF444444)
                 )
-                .clickable(enabled = !exporting && enabledCount > 0) { onExport() }
-        ) {
-            Text(
-                if (exporting) exportStatus.ifEmpty { "Working…" } else "Save Mix",
-                fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
-                color = if (!exporting && enabledCount > 0) Color.White else Color(0xFF444444)
-            )
+            }
+            // Save mix button
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.weight(1f).height(44.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(
+                        if (!exporting && hasAnyNote) Color(0xFF26A69A) else Color(0xFF1E1E1E)
+                    )
+                    .clickable(enabled = !exporting && hasAnyNote) { onExport() }
+            ) {
+                Text(
+                    if (exporting) exportStatus.ifEmpty { "Working…" } else "Save Mix",
+                    fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                    color = if (!exporting && hasAnyNote) Color.White else Color(0xFF444444)
+                )
+            }
         }
 
         if (!exporting && exportStatus.isNotEmpty()) {
@@ -782,41 +933,55 @@ fun BassTab(
     }
 }
 
+// ── Bass bar card ─────────────────────────────────────────────────────────────
+
 @Composable
-fun BassBarCard(bar: BarResult, enabled: Boolean, onClick: () -> Unit) {
-    val color = if (enabled) noteColor(bar.rootNote) else Color(0xFF2A2A2A)
+fun BassBarCard(
+    barIndex: Int,
+    assignedNote: String?,
+    detectedNote: String?,
+    isEditing: Boolean,
+    onClick: () -> Unit
+) {
+    val displayNote = assignedNote ?: "—"
+    val color       = if (assignedNote != null) noteColor(assignedNote) else Color(0xFF2A2A2A)
+    val borderColor = if (isEditing) Color(0xFF6650A4) else Color.Transparent
+
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier.width(54.dp).clickable { onClick() }
     ) {
-        Text("${bar.barIndex + 1}", fontSize = 10.sp, textAlign = TextAlign.Center,
-            color = if (enabled) Color(0xFF888888) else Color(0xFF333333))
+        Text("${barIndex + 1}", fontSize = 10.sp, textAlign = TextAlign.Center,
+            color = if (isEditing) Color.White else Color(0xFF444444))
         Spacer(Modifier.height(4.dp))
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier.fillMaxWidth().height(68.dp)
                 .clip(RoundedCornerShape(10.dp))
-                .background(color.copy(alpha = if (enabled) 0.88f else 0.22f))
+                .background(
+                    if (isEditing) color.copy(alpha = 1f)
+                    else if (assignedNote != null) color.copy(alpha = 0.80f)
+                    else Color(0xFF1A1A1A)
+                )
         ) {
-            Text(bar.rootNote, fontSize = 17.sp, fontWeight = FontWeight.Bold,
-                color = if (enabled) Color.White else Color(0xFF444444))
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(displayNote, fontSize = 17.sp, fontWeight = FontWeight.Bold,
+                    color = if (assignedNote != null) Color.White else Color(0xFF333333))
+                // Show detected note as a dim hint if different from assigned
+                if (detectedNote != null && detectedNote != assignedNote) {
+                    Text(detectedNote, fontSize = 9.sp,
+                        color = noteColor(detectedNote).copy(alpha = 0.45f))
+                }
+            }
         }
         Spacer(Modifier.height(4.dp))
         Box(modifier = Modifier.size(4.dp).clip(RoundedCornerShape(2.dp))
-            .background(if (enabled) color.copy(alpha = 0.7f) else Color(0xFF222222)))
+            .background(
+                if (isEditing) Color(0xFF6650A4)
+                else if (assignedNote != null) color.copy(alpha = 0.6f)
+                else Color(0xFF222222)
+            ))
     }
-}
-
-@Composable
-fun SmallChip(label: String, onClick: () -> Unit) {
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = Modifier.height(28.dp)
-            .clip(RoundedCornerShape(6.dp))
-            .background(Color(0xFF1E1E1E))
-            .clickable { onClick() }
-            .padding(horizontal = 12.dp)
-    ) { Text(label, fontSize = 11.sp, color = Color(0xFF888888)) }
 }
 
 // ── EQ tab ────────────────────────────────────────────────────────────────────
@@ -858,7 +1023,7 @@ fun EqTab(
     }
 }
 
-// ── BarCard ───────────────────────────────────────────────────────────────────
+// ── BarCard (timeline) ────────────────────────────────────────────────────────
 
 @Composable
 fun BarCard(bar: BarResult, isActive: Boolean = false) {
