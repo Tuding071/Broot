@@ -63,11 +63,16 @@ data class EqBandInfo(val band: Int, val centerFreqHz: Int, val minLevel: Int, v
 
 private val NOTE_NAMES = arrayOf("C","C#","D","D#","E","F","F#","G","G#","A","A#","B")
 
-private val BASS_FREQ = mapOf(
+// Base frequencies at octave 2 (~65 Hz range)
+private val BASS_FREQ_BASE = mapOf(
     "C"  to 65.41,  "C#" to 69.30,  "D"  to 73.42,  "D#" to 77.78,
     "E"  to 82.41,  "F"  to 87.31,  "F#" to 92.50,  "G"  to 98.00,
     "G#" to 103.83, "A"  to 110.00, "A#" to 116.54,  "B"  to 123.47
 )
+
+// Octave multipliers: octave 1 = sub-bass, 2 = deep bass, 3 = mid-bass, 4 = upper-bass
+private val OCTAVE_MULT = mapOf(1 to 0.5, 2 to 1.0, 3 to 2.0, 4 to 4.0)
+private val OCTAVE_LABEL = mapOf(1 to "SUB", 2 to "DEEP", 3 to "MID", 4 to "HIGH")
 
 private fun noteColor(note: String): Color = when (note) {
     "C"  -> Color(0xFFEF5350)
@@ -174,11 +179,10 @@ private suspend fun decodeAudio(context: Context, uri: Uri): Pair<Int, FloatArra
         val chunks = mutableListOf<ByteArray>()
         val info   = MediaCodec.BufferInfo()
         var inputDone = false; var outputDone = false
-        val timeout = 10_000L
 
         while (!outputDone) {
             if (!inputDone) {
-                val idx = codec.dequeueInputBuffer(timeout)
+                val idx = codec.dequeueInputBuffer(10_000L)
                 if (idx >= 0) {
                     val buf = codec.getInputBuffer(idx)!!
                     val n = extractor.readSampleData(buf, 0)
@@ -191,9 +195,9 @@ private suspend fun decodeAudio(context: Context, uri: Uri): Pair<Int, FloatArra
                     }
                 }
             }
-            when (val out = codec.dequeueOutputBuffer(info, timeout)) {
-                MediaCodec.INFO_TRY_AGAIN_LATER       -> {}
-                MediaCodec.INFO_OUTPUT_FORMAT_CHANGED  -> {}
+            when (val out = codec.dequeueOutputBuffer(info, 10_000L)) {
+                MediaCodec.INFO_TRY_AGAIN_LATER      -> {}
+                MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {}
                 else -> if (out >= 0) {
                     if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) outputDone = true
                     val buf = codec.getOutputBuffer(out)!!
@@ -279,32 +283,37 @@ private fun analyzeRootNote(samples: FloatArray, start: Int, end: Int, sampleRat
     return Pair(freqToNote(freq), conf)
 }
 
-// ── Bass synthesis + export ───────────────────────────────────────────────────
+// ── Bass synthesis ────────────────────────────────────────────────────────────
 
+// Pure sine wave per bar at chosen octave with smooth attack/release envelope
 private fun generateBassLine(
     bars: List<BarResult>,
     enabled: List<Boolean>,
     barSamples: Int,
-    sampleRate: Int
+    sampleRate: Int,
+    octave: Int       // 1=sub, 2=deep, 3=mid, 4=high
 ): FloatArray {
-    val out = FloatArray(bars.size * barSamples)
+    val mult = OCTAVE_MULT[octave] ?: 1.0
+    val out  = FloatArray(bars.size * barSamples)
     for ((b, bar) in bars.withIndex()) {
         if (!enabled[b] || bar.rootNote == "?") continue
-        val freq  = BASS_FREQ[bar.rootNote] ?: continue
-        val start = b * barSamples
+        val baseFreq = BASS_FREQ_BASE[bar.rootNote] ?: continue
+        val freq     = baseFreq * mult
+        val start    = b * barSamples
+        val attackSamples  = (sampleRate * 0.015).toInt().coerceAtLeast(1) // 15 ms attack
+        val releaseSamples = (sampleRate * 0.040).toInt().coerceAtLeast(1) // 40 ms release
         for (i in 0 until barSamples) {
-            val t      = i.toDouble() / sampleRate
-            val attack = minOf(1.0, i / (sampleRate * 0.02))
-            val rel    = minOf(1.0, (barSamples - i) / maxOf((sampleRate * 0.04).toInt(), 1).toDouble())
-            val env    = attack * rel
-            val wave = sin(2 * PI * freq * t) * 0.70 +
-                       sin(2 * PI * freq * 2 * t) * 0.20 +
-                       sin(2 * PI * freq * 3 * t) * 0.10
-            out[start + i] = (wave * env * 0.55).toFloat()
+            val t       = i.toDouble() / sampleRate
+            val attack  = minOf(1.0, i.toDouble() / attackSamples)
+            val release = minOf(1.0, (barSamples - i).toDouble() / releaseSamples)
+            val env     = attack * release
+            out[start + i] = (sin(2.0 * PI * freq * t) * env * 0.65).toFloat()
         }
     }
     return out
 }
+
+// ── WAV export ────────────────────────────────────────────────────────────────
 
 private fun writeWav(file: File, samples: FloatArray, sampleRate: Int) {
     FileOutputStream(file).use { fos ->
@@ -331,14 +340,14 @@ private fun writeWav(file: File, samples: FloatArray, sampleRate: Int) {
 
 private suspend fun saveMix(
     context: Context, uri: Uri,
-    result: AnalysisResult, enabled: List<Boolean>,
+    result: AnalysisResult, enabled: List<Boolean>, octave: Int,
     onStatus: (String) -> Unit
 ): String = withContext(Dispatchers.IO) {
     onStatus("Decoding audio…")
     val (sr, original) = decodeAudio(context, uri)
     onStatus("Generating bass…")
     val barSamples = ((60.0 / result.bpm) * 4 * sr).toInt()
-    val bass = generateBassLine(result.bars, enabled, barSamples, sr)
+    val bass = generateBassLine(result.bars, enabled, barSamples, sr, octave)
     onStatus("Mixing…")
     val mixed = FloatArray(maxOf(original.size, bass.size)) { i ->
         val a = if (i < original.size) original[i] else 0f
@@ -433,7 +442,6 @@ fun BrootApp() {
         scope.launch { delay(300); filePicker.launch("audio/*") }
     }
 
-    // Done view gets the full screen
     val s = state
     if (s is AnalysisState.Done) {
         DoneView(s.result, s.uri, s.fileName) { state = AnalysisState.Idle }
@@ -466,7 +474,6 @@ fun DoneView(result: AnalysisResult, uri: Uri, fileName: String, onReset: () -> 
     val ctx   = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    // Player state
     val player      = remember { MediaPlayer() }
     var playerReady by remember { mutableStateOf(false) }
     var isPlaying   by remember { mutableStateOf(false) }
@@ -475,26 +482,20 @@ fun DoneView(result: AnalysisResult, uri: Uri, fileName: String, onReset: () -> 
     var isSeeking   by remember { mutableStateOf(false) }
     var seekTarget  by remember { mutableStateOf(0) }
 
-    // EQ state
     var eq       by remember { mutableStateOf<Equalizer?>(null) }
     var eqBands  by remember { mutableStateOf<List<EqBandInfo>>(emptyList()) }
     var eqLevels by remember { mutableStateOf(IntArray(0)) }
 
-    // Bass state
     val bassEnabled  = remember { mutableStateListOf(*Array(result.bars.size) { true }) }
+    var bassOctave   by remember { mutableStateOf(2) }   // 1–4
     var exporting    by remember { mutableStateOf(false) }
     var exportStatus by remember { mutableStateOf("") }
 
-    // Tab: 0=Timeline  1=Bass  2=EQ
     var tab by remember { mutableStateOf(0) }
 
-    // Setup player + EQ once
     LaunchedEffect(uri) {
         try {
-            withContext(Dispatchers.IO) {
-                player.setDataSource(ctx, uri)
-                player.prepare()
-            }
+            withContext(Dispatchers.IO) { player.setDataSource(ctx, uri); player.prepare() }
             totalMs = player.duration
             player.setOnCompletionListener { isPlaying = false; currentMs = 0 }
             playerReady = true
@@ -510,7 +511,6 @@ fun DoneView(result: AnalysisResult, uri: Uri, fileName: String, onReset: () -> 
         } catch (_: Exception) {}
     }
 
-    // Poll playback position
     LaunchedEffect(isPlaying) {
         while (isPlaying) {
             if (!isSeeking && playerReady) currentMs = player.currentPosition
@@ -518,16 +518,13 @@ fun DoneView(result: AnalysisResult, uri: Uri, fileName: String, onReset: () -> 
         }
     }
 
-    DisposableEffect(Unit) {
-        onDispose { eq?.release(); player.release() }
-    }
+    DisposableEffect(Unit) { onDispose { eq?.release(); player.release() } }
 
     val barDurationMs = if (result.bpm > 0) ((60.0 / result.bpm) * 4 * 1000).toInt() else 1
     val currentBar    = (currentMs / barDurationMs).coerceIn(0, result.bars.size - 1)
     val displayMs     = if (isSeeking) seekTarget else currentMs
     val timelineState = rememberLazyListState()
 
-    // Auto-scroll timeline to current bar while playing
     LaunchedEffect(currentBar) {
         if (isPlaying && !isSeeking) timelineState.animateScrollToItem(currentBar)
     }
@@ -540,7 +537,6 @@ fun DoneView(result: AnalysisResult, uri: Uri, fileName: String, onReset: () -> 
             .padding(top = 48.dp, start = 16.dp, end = 16.dp, bottom = 32.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // ── Header ──
         Text("broot", fontSize = 20.sp, fontWeight = FontWeight.Bold,
             color = Color.White, letterSpacing = 4.sp)
         Spacer(Modifier.height(16.dp))
@@ -567,11 +563,7 @@ fun DoneView(result: AnalysisResult, uri: Uri, fileName: String, onReset: () -> 
             ) { Text(if (isPlaying) "⏸" else "▶", fontSize = 20.sp, color = Color.White) }
 
             Spacer(Modifier.height(10.dp))
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth()
-            ) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Text(formatMs(displayMs), fontSize = 11.sp, color = Color(0xFF555555),
                     modifier = Modifier.width(36.dp))
                 Slider(
@@ -624,20 +616,26 @@ fun DoneView(result: AnalysisResult, uri: Uri, fileName: String, onReset: () -> 
         }
         Spacer(Modifier.height(14.dp))
 
-        // ── Tab content ──
         when (tab) {
             0 -> TimelineTab(result.bars, currentBar, isPlaying, timelineState)
             1 -> BassTab(
-                    result, bassEnabled, exporting, exportStatus,
+                    result      = result,
+                    bassEnabled = bassEnabled,
+                    octave      = bassOctave,
+                    exporting   = exporting,
+                    exportStatus= exportStatus,
                     onToggle    = { i -> bassEnabled[i] = !bassEnabled[i] },
                     onToggleAll = { v -> for (i in bassEnabled.indices) bassEnabled[i] = v },
+                    onOctaveChange = { bassOctave = it },
                     onExport    = {
                         scope.launch {
                             exporting = true; exportStatus = ""
                             runCatching {
-                                saveMix(ctx, uri, result, bassEnabled.toList()) { exportStatus = it }
-                            }.onSuccess  { path -> exportStatus = "Saved:\n$path" }
-                             .onFailure  { exportStatus = "Error: ${it.message}" }
+                                saveMix(ctx, uri, result, bassEnabled.toList(), bassOctave) {
+                                    exportStatus = it
+                                }
+                            }.onSuccess { path -> exportStatus = "Saved:\n$path" }
+                             .onFailure { exportStatus = "Error: ${it.message}" }
                             exporting = false
                         }
                     }
@@ -681,13 +679,59 @@ fun TimelineTab(
 fun BassTab(
     result: AnalysisResult,
     bassEnabled: List<Boolean>,
+    octave: Int,
     exporting: Boolean,
     exportStatus: String,
     onToggle: (Int) -> Unit,
     onToggleAll: (Boolean) -> Unit,
+    onOctaveChange: (Int) -> Unit,
     onExport: () -> Unit
 ) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
+
+        // ── Octave selector ──
+        Text("O C T A V E", fontSize = 10.sp, color = Color(0xFF444444), letterSpacing = 3.sp,
+            modifier = Modifier.align(Alignment.Start).padding(start = 4.dp, bottom = 8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            (1..4).forEach { oct ->
+                val selected = oct == octave
+                val freqHint = when (oct) {
+                    1 -> "~32 Hz"
+                    2 -> "~65 Hz"
+                    3 -> "~130 Hz"
+                    else -> "~260 Hz"
+                }
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.weight(1f).height(58.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(if (selected) Color(0xFF26A69A) else Color(0xFF1A1A1A))
+                        .clickable { onOctaveChange(oct) }
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            OCTAVE_LABEL[oct] ?: "$oct",
+                            fontSize = 13.sp, fontWeight = FontWeight.Bold,
+                            color = if (selected) Color.White else Color(0xFF555555)
+                        )
+                        Text(
+                            freqHint,
+                            fontSize = 9.sp,
+                            color = if (selected) Color(0xAAFFFFFF) else Color(0xFF333333)
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+        Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(Color(0xFF1A1A1A)))
+        Spacer(Modifier.height(12.dp))
+
+        // ── Bar toggles ──
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -712,13 +756,13 @@ fun BassTab(
             fontSize = 11.sp, color = Color(0xFF555555))
         Spacer(Modifier.height(14.dp))
 
+        // ── Save button ──
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier.fillMaxWidth(0.68f).height(44.dp)
                 .clip(RoundedCornerShape(12.dp))
                 .background(
-                    if (!exporting && enabledCount > 0) Color(0xFF26A69A)
-                    else Color(0xFF1E1E1E)
+                    if (!exporting && enabledCount > 0) Color(0xFF26A69A) else Color(0xFF1E1E1E)
                 )
                 .clickable(enabled = !exporting && enabledCount > 0) { onExport() }
         ) {
@@ -793,7 +837,6 @@ fun EqTab(
     ) {
         bands.forEach { band ->
             val level = if (levels.size > band.band) levels[band.band] else 0
-            val db    = "%.1f dB".format(level / 100f)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(formatFreq(band.centerFreqHz), fontSize = 11.sp, color = Color(0xFF666666),
                     modifier = Modifier.width(34.dp), textAlign = TextAlign.End)
@@ -808,7 +851,7 @@ fun EqTab(
                         inactiveTrackColor = Color(0xFF2A2A2A)
                     )
                 )
-                Text(db, fontSize = 10.sp, color = Color(0xFF666666),
+                Text("%.1f dB".format(level / 100f), fontSize = 10.sp, color = Color(0xFF666666),
                     modifier = Modifier.width(52.dp))
             }
         }
