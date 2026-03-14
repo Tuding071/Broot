@@ -76,8 +76,8 @@ jobs:
                   applicationId = "com.broot"
                   minSdk = 24
                   targetSdk = 34
-                  versionCode = 1
-                  versionName = "1.0"
+                  versionCode = 2
+                  versionName = "1.1"
               }
               buildTypes {
                   release { isMinifyEnabled = false }
@@ -124,7 +124,8 @@ jobs:
                   android:supportsRtl="true">
                   <activity
                       android:name=".MainActivity"
-                      android:exported="true">
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize|keyboardHidden">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN"/>
                           <category android:name="android.intent.category.LAUNCHER"/>
