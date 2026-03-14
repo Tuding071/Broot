@@ -244,7 +244,7 @@ private fun analyzeRootNote(samples: FloatArray, start: Int, end: Int, sampleRat
         p += FFT_SIZE / 2; count++
     }
     if (count == 0) return Pair("?", 0f)
-    for (i in mag.indices) mag[i] /= count
+    for (i in mag.indices) mag[i] /= count.toDouble()
 
     val loIdx = (60.0  * FFT_SIZE / sampleRate).toInt().coerceAtLeast(1)
     val hiIdx = (500.0 * FFT_SIZE / sampleRate).toInt().coerceAtMost(FFT_SIZE/2 - 1)
